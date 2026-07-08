@@ -1,0 +1,56 @@
+{
+  "paths": {
+    "snapshots_dir": "data/snapshots",
+    "logs_dir": "data/logs",
+    "tmp_dir": "data/tmp"
+  },
+
+  "project_root": "X:\\Filial São José\\Remanufatura\\Gestão\\xApps\\HUB_indicadores",
+
+  "sap_in_dir": "data/analiseEstoques/SAP_IN",
+  "mb51_in_dir": "data/analiseEstoques/MB51_IN",
+  "mb51_sheet_name": "Data",
+
+  "db_path": "data/analiseEstoques/DB/estoque.sqlite",
+  "output_dir": "data/analiseEstoques/OUTPUT",
+  "logs_dir": "data/analiseEstoques/LOGS",
+
+  "mdg_file": "X:\\Filial São José\\Remanufatura\\Gestão\\Processamento de Material - 4MDG\\Base.xlsx",
+  "mdg_sheets": ["Produto", "Peça"],
+
+  "familia_file": "X:\\Filial São José\\Remanufatura\\Gestão\\Indicadores\\Base familia comercial_SAP V2.xlsx",
+  "familia_sheet": "Sheet1",
+  "familia_col_material": "Cód. Material",
+  "familia_col_grupo": "Unidade",
+  "familia_col_familia": "Família",
+  "familia_col_subfamilia": "SubFamília",
+
+  "custo_file": "X:\\Filial São José\\Remanufatura\\Controle CST\\Panorama CST\\Panorama CST 2025\\Dados\\Gerenciamento de Estoque.xlsx",
+  "pcm_file": "X:\\Filial São José\\Remanufatura\\PCP\\Felipe\\CONTROLE PCM NEWBKP2.XLSM",
+
+  "meta": { "meta_giro_valor": 1.2 },
+
+  "output": {
+    "gerar_base_consumo": true,
+    "gerar_top": true,
+    "top_n": 200,
+    "top_order_by": "val_total",
+    "write_strategy": "tmp_replace"
+  },
+
+  "estoques": {
+    "db_path": "data/analiseEstoques/DB/estoque.sqlite",
+    "paths": {
+      "mb51_in_dir": "data/analiseEstoques/MB51_IN",
+      "sap_in_dir": "data/analiseEstoques/SAP_IN",
+      "out_mast_dir": "data/analiseEstoques/OUTPUT/MAST",
+      "out_masr_dir": "data/analiseEstoques/OUTPUT/MASR",
+      "out_wepv_dir": "data/analiseEstoques/OUTPUT/WEPV",
+      "logs_dir": "data/analiseEstoques/LOGS"
+    }
+  },
+
+  "inventarios": {
+    "db_path": "data/analiseInventarios/DB/inventarios.sqlite"
+  }
+}

@@ -1,0 +1,28 @@
+# Ambientes Python
+.venv/
+.venvcls/
+
+# Cache Python
+__pycache__/
+*.pyc
+
+# Dados operacionais
+data/
+
+# Logs
+LOGS/
+*.log
+
+# Arquivos temporários
+*.tmp
+*.bak
+~$*
+
+# Streamlit sensível
+.streamlit/secrets.toml
+
+# Legados e testes soltos
+OLD/
+_legado/
+teste_colunas.py
+estrutura_hub.txt

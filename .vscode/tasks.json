@@ -1,0 +1,26 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "HUB: Run Streamlit (8501)",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "-m",
+        "streamlit",
+        "run",
+        "code/hub/app.py",
+        "--server.port",
+        "8501"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "PYTHONPATH": "${workspaceFolder}/code",
+          "HUB_CONFIG": "${workspaceFolder}/config.json"
+        }
+      },
+      "problemMatcher": []
+    }
+  ]
+}
