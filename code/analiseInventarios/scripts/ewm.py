@@ -8,6 +8,10 @@ from pathlib import Path
 import math
 import sqlite3
 
+from analiseInventarios.scripts.indicadores_inventario import (
+    calcular_cobertura_semestral,
+)
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -634,6 +638,8 @@ def render_ewm_tab(
                 df_hist_ewm["Cobertura (%)"], errors="coerce"
             ).fillna(0)
 
+            df_hist_ewm = calcular_cobertura_semestral(df_hist_ewm)
+
             # ------------------------------------------------------------
             # GAP DO MÊS
             # Exemplo:
@@ -641,22 +647,6 @@ def render_ewm_tab(
             # ------------------------------------------------------------
             df_hist_ewm["Gap mês (%)"] = (
                 df_hist_ewm["Cobertura (%)"] - META_MENSAL_EWM
-            ).round(2)
-
-            # ------------------------------------------------------------
-            # COBERTURA ACUMULADA DO SEMESTRE ATÉ CADA MÊS
-            # ------------------------------------------------------------
-            df_hist_ewm["Baseline acumulado"] = df_hist_ewm["Baseline"].cumsum()
-            df_hist_ewm["Contados acumulado"] = df_hist_ewm["Contados"].cumsum()
-
-            df_hist_ewm["Cobertura semestre (%)"] = 0.0
-
-            mask_baseline_acum = df_hist_ewm["Baseline acumulado"] > 0
-
-            df_hist_ewm.loc[mask_baseline_acum, "Cobertura semestre (%)"] = (
-                df_hist_ewm.loc[mask_baseline_acum, "Contados acumulado"]
-                / df_hist_ewm.loc[mask_baseline_acum, "Baseline acumulado"]
-                * 100
             ).round(2)
 
             # ------------------------------------------------------------

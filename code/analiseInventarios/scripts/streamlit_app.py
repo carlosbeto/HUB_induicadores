@@ -6,13 +6,15 @@ from datetime import date, timedelta
 from pathlib import Path
 import sqlite3
 
+from analiseInventarios.scripts.indicadores_inventario import (
+    calcular_cobertura_semestral,
+)
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 import math
-
-print(">>> EWM carregado:", __file__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = PROJECT_ROOT / "outputs"
@@ -1890,6 +1892,8 @@ with tab3:
 
                         df_hist_mm = df_hist.copy()
 
+                        df_hist_mm = calcular_cobertura_semestral(df_hist_mm)
+
                         df_hist_mm["Baseline"] = pd.to_numeric(
                             df_hist_mm["Baseline"], errors="coerce"
                         ).fillna(0)
@@ -1906,41 +1910,18 @@ with tab3:
                             df_hist_mm["Cobertura (%)"] - META_MENSAL_MM
                         ).round(2)
 
-                        df_hist_mm["Baseline acumulado"] = df_hist_mm["Baseline"].cumsum()
-                        df_hist_mm["Contados acumulado"] = df_hist_mm["Contados"].cumsum()
-
-                        df_hist_mm["Cobertura semestre (%)"] = 0.0
-
-                        mask_mm = df_hist_mm["Baseline acumulado"] > 0
-
-                        df_hist_mm.loc[mask_mm, "Cobertura semestre (%)"] = (
-                            df_hist_mm.loc[mask_mm, "Contados acumulado"]
-                            / df_hist_mm.loc[mask_mm, "Baseline acumulado"]
-                            * 100
-                        ).round(2)
-
-                        df_hist_mm["Mês índice"] = range(1, len(df_hist_mm) + 1)
-
-                        df_hist_mm["Meta semestre (%)"] = (
-                            df_hist_mm["Mês índice"] * META_MENSAL_MM
-                        ).round(2)
-
-                        df_hist_mm["Saldo a contar (%)"] = (
-                            100.0 - df_hist_mm["Cobertura semestre (%)"]
-                        ).round(2)
-
                         df_hist_view = df_hist_mm[
-                        [
-                            "Mês",
-                            "Baseline",
-                            "Contados",
-                            "Cobertura (%)",
-                            "Gap mês (%)",
-                            "Meta semestre (%)",
-                            "Cobertura semestre (%)",
-                            "Saldo a contar (%)",
-                        ]
-                    ].copy()
+                            [
+                                "Mês",
+                                "Baseline",
+                                "Contados",
+                                "Cobertura (%)",
+                                "Gap mês (%)",
+                                "Meta semestre (%)",
+                                "Cobertura semestre (%)",
+                                "Gap semestre (%)",
+                            ]
+                        ].copy()
 
                         def status_com_icone_mm(valor):
                             try:
@@ -1955,7 +1936,9 @@ with tab3:
                             else:
                                 return "🔴 Atrasado"
                         df_hist_view["Status mês"] = df_hist_view["Gap mês (%)"].apply(status_com_icone_mm)
-                        df_hist_view["Status semestre"] = df_hist_view["Saldo a contar (%)"].apply(status_com_icone_mm)
+                        df_hist_view["Status semestre"] = df_hist_view["Gap semestre (%)"].apply(
+                            status_com_icone_mm
+                        )
 
                         def cor_gap_mm(valor):
                             try:
@@ -1970,18 +1953,6 @@ with tab3:
                             else:
                                 return "background-color: #f4cccc; color: #990000;"
 
-                        def cor_saldo_contar_mm(valor):
-                            try:
-                                valor = float(valor)
-                            except Exception:
-                                return ""
-
-                            if valor <= 5:
-                                return "background-color: #d9ead3; color: #274e13;"
-                            elif valor <= 30:
-                                return "background-color: #fff2cc; color: #7f6000;"
-                            else:
-                                return "background-color: #f4cccc; color: #990000;"
 
                         def cor_status_mm(valor):
                             if "Em linha" in str(valor):
@@ -2002,11 +1973,10 @@ with tab3:
                                     "Gap mês (%)": lambda x: fmt_pct(x),
                                     "Meta semestre (%)": lambda x: fmt_pct(x),
                                     "Cobertura semestre (%)": lambda x: fmt_pct(x),
-                                    "Saldo a contar (%)": lambda x: fmt_pct(x),
+                                    "Gap semestre (%)": lambda x: fmt_pct(x),
                                 }
                             )
-                            .map(cor_gap_mm, subset=["Gap mês (%)"])
-                            .map(cor_saldo_contar_mm, subset=["Saldo a contar (%)"])
+                            .map(cor_gap_mm, subset=["Gap mês (%)", "Gap semestre (%)"])
                             .map(cor_status_mm, subset=["Status mês", "Status semestre"])
                         )
 
@@ -2037,10 +2007,11 @@ with tab3:
                                 r4.metric("GAP médio", fmt_pct(gap_medio_mm))
 
                         st.caption(
-                            "Esta tabela mostra duas leituras de GAP: "
-                            "GAP mês compara a cobertura do mês contra a meta mensal de 16,66%; "
-                            "GAP semestre compara a cobertura acumulada até o mês contra a meta acumulada do semestre."
-                    )
+                            "Esta tabela apresenta duas leituras complementares: "
+                            "GAP mês compara a cobertura isolada do mês com a meta mensal de 16,67%; "
+                            "GAP semestre compara a evolução acumulada do semestre, calculada pela soma "
+                            "dos itens contados dividida pela média dos baselines, com a meta acumulada."
+                        )
                 else:
                     st.info("Sem dados suficientes para montar a evolução mensal do semestre.")
 
@@ -2309,8 +2280,6 @@ with tab3:
         st.error(f"Erro ao montar a aba de contagens da semana: {e}")
 
 with tab4:
-
-    print("DEBUG DB_PATH =", DB_PATH)
 
     from analiseInventarios.scripts.ewm import render_ewm_tab
 
