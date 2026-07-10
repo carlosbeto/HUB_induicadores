@@ -1,4 +1,4 @@
-# code/analiseInventarios/scripts/ewm.py
+# code/analiseInventarios/scripts/ewm_dashboard.py
 # -*- coding: utf-8 -*-
 
 from __future__ import annotations
@@ -538,7 +538,7 @@ def _render_evolucao_mensal_ewm(
         )
 
 
-def render_ewm_tab(
+def render_ewm_dashboard(
     *,
     df_ewm: pd.DataFrame,
     db_path: Path,
