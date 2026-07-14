@@ -43,6 +43,8 @@ from pathlib import Path
 from datetime import datetime, date, timedelta
 from typing import Optional, List, Dict, Any
 
+from analiseEstoques.etl.load_dim_material_db import carregar_dim_material
+
 SAP_SHEET_DEFAULT = "Exportação SAPUI5"
 
 
@@ -1814,32 +1816,96 @@ def compute_and_store_kpi(con: sqlite3.Connection, deposito: str, d: date, meta_
 
 
 def aplicar_blacklist(df: pd.DataFrame) -> pd.Series:
+    """
+    Aplica a blacklist operacional do MAST.
+
+    O campo processamento agora vem normalizado pelo ASSIST, sem os
+    prefixos numéricos usados anteriormente pela base 4MDG.
+    """
     item = pd.to_numeric(df["material"], errors="coerce")
-    desc = df["descricao"].astype("string").fillna("").str.strip()
-    proc = df.get("processamento", pd.Series([pd.NA] * len(df))).astype("string").fillna("").str.strip()
+    desc = (
+        df["descricao"]
+        .astype("string")
+        .fillna("")
+        .str.strip()
+    )
+    proc = (
+        df.get(
+            "processamento",
+            pd.Series([pd.NA] * len(df), index=df.index),
+        )
+        .astype("string")
+        .fillna("")
+        .str.strip()
+        .str.upper()
+    )
 
-    cond_1 = proc.eq("02 - DESCARTE")
+    cond_1 = proc.eq("DESCARTE")
 
-    cond_2 = proc.eq("06 - TESTE CONSERTO")
-    cond_3 = proc.eq("03 - DESCARTE DEFEITUOSO")
-    cond_4 = proc.eq("Tratativa Diferenciada")
-    cond_5 = proc.eq("01 - CANIBALIZAÇÃO")
-    cond_6 = proc.eq("05 - TESTE")
-    cond_7 = proc.eq("Reparo")
+    cond_2 = proc.eq("TESTE CONSERTO")
+    cond_3 = proc.eq("DESCARTE DEFEITUOSO")
+    cond_4 = proc.eq("TRATATIVA DIFERENCIADA")
+    cond_5 = proc.eq("CANIBALIZAÇÃO")
+    cond_6 = proc.eq("TESTE")
+    cond_7 = proc.eq("REPARO")
 
     cond_8 = item.isin([1400138, 1085236])
 
-    cond_faixa_187 = item.between(1870000, 1879999, inclusive="both")
-    cond_desc_inversor = desc.str.contains("inversor", case=False, na=False)
-    cond_desc_microinv = desc.str.contains("microinversor", case=False, na=False)
-    cond_9 = cond_faixa_187 & (cond_desc_inversor | cond_desc_microinv)
+    cond_faixa_187 = item.between(
+        1870000,
+        1879999,
+        inclusive="both",
+    )
+    cond_desc_inversor = desc.str.contains(
+        "inversor",
+        case=False,
+        na=False,
+    )
+    cond_desc_microinv = desc.str.contains(
+        "microinversor",
+        case=False,
+        na=False,
+    )
+    cond_9 = cond_faixa_187 & (
+        cond_desc_inversor | cond_desc_microinv
+    )
 
     cond_10 = item.lt(1880000)
 
-    condicoes = [cond_1, cond_2, cond_3, cond_4, cond_5, cond_6, cond_7, cond_8, cond_9, cond_10]
-    escolhas   = ["SIM",  "NÃO",  "NÃO",  "NÃO",  "NÃO",  "NÃO",  "NÃO",  "NÃO",  "NÃO",  "SIM"]
+    condicoes = [
+        cond_1,
+        cond_2,
+        cond_3,
+        cond_4,
+        cond_5,
+        cond_6,
+        cond_7,
+        cond_8,
+        cond_9,
+        cond_10,
+    ]
+    escolhas = [
+        "SIM",
+        "NÃO",
+        "NÃO",
+        "NÃO",
+        "NÃO",
+        "NÃO",
+        "NÃO",
+        "NÃO",
+        "NÃO",
+        "SIM",
+    ]
 
-    return pd.Series(np.select(condicoes, escolhas, default="NÃO"), index=df.index, dtype="string")
+    return pd.Series(
+        np.select(
+            condicoes,
+            escolhas,
+            default="NÃO",
+        ),
+        index=df.index,
+        dtype="string",
+    )
 
 
 # ============================================================
@@ -1973,24 +2039,62 @@ def build_output(con: sqlite3.Connection, deposito: str, d: date, out_dir: Path,
 
     base_full["material"] = base_full["material"].astype("string").apply(norm_material_text)
 
-    # Dimensão família/grupo
-    ensure_dim_material_grupo(con)
-    dim_fam = pd.read_sql_query("SELECT material, grupo, familia, subfamilia FROM dim_material_grupo", con)
-    if not dim_fam.empty:
-        dim_fam["material"] = dim_fam["material"].astype("string").apply(norm_material_text)
-    base_full = base_full.merge(dim_fam, on="material", how="left")
+    # Dimensão consolidada de materiais.
+    # Fonte comercial: CSV oficial do BI.
+    # Hierarquia: dim_segmento.
+    # Processamento: ASSIST.
+    dim_material = pd.read_sql_query(
+        """
+        SELECT
+            material,
+            bu,
+            diretoria,
+            segmento,
+            centro_custo,
+            centro_lucro,
+            codigo_centro_lucro,
+            codigo_centro_sap,
+            processamento
+        FROM dim_material;
+        """,
+        con,
+    )
 
-    base_full["grupo"] = base_full.get("grupo", pd.NA).fillna("SEM_GRUPO")
-    base_full["familia"] = base_full.get("familia", pd.NA).fillna("SEM_FAMILIA")
-    base_full["subfamilia"] = base_full.get("subfamilia", pd.NA).fillna("SEM_SUBFAMILIA")
+    if not dim_material.empty:
+        dim_material["material"] = (
+            dim_material["material"]
+            .astype("string")
+            .apply(norm_material_text)
+        )
+
+    base_full = base_full.merge(
+        dim_material,
+        on="material",
+        how="left",
+    )
+
+    # Compatibilidade temporária com os outputs e páginas atuais:
+    # grupo      <- BU
+    # familia    <- Diretoria
+    # subfamilia <- Segmento
+    # uni_neg    <- BU
+    base_full["grupo"] = (
+        base_full.get("bu", pd.Series(pd.NA, index=base_full.index))
+        .fillna("SEM_BU")
+    )
+    base_full["familia"] = (
+        base_full.get("diretoria", pd.Series(pd.NA, index=base_full.index))
+        .fillna("SEM_DIRETORIA")
+    )
+    base_full["subfamilia"] = (
+        base_full.get("segmento", pd.Series(pd.NA, index=base_full.index))
+        .fillna("SEM_SEGMENTO")
+    )
     base_full["uni_neg"] = base_full["grupo"]
 
-    # Dimensão processamento
-    ensure_dim_material_proc(con)
-    proc_df = pd.read_sql_query("SELECT material, processamento, saida_manufatura FROM dim_material_proc", con)
-    if not proc_df.empty:
-        proc_df["material"] = proc_df["material"].astype("string").apply(norm_material_text)
-    base_full = base_full.merge(proc_df, on="material", how="left")
+    # Campo legado ainda exigido pelo contrato de saída.
+    # A nova arquitetura ainda não possui fonte oficial para esse atributo.
+    base_full["saida_manufatura"] = pd.NA
 
     # -----------------------------
     # 4) Dimensão de custo + ALERTAS + COBERTURA
@@ -2450,27 +2554,28 @@ def run(config_path, snapshot_date=None):
     print_step(f"MB51: procurando pasta em: {mb51_in}")
 
     # ------------------------------------------------------------
-    # 5) Arquivos auxiliares (MDG / Família / Custo)
+    # 5) Fontes auxiliares da nova arquitetura
     # ------------------------------------------------------------
-    # Observação:
-    # - Esses arquivos são opcionais.
-    # - Se não existirem, o ETL segue (mas dimensões podem ficar vazias).
-    mdg_file = Path(cfg.get("mdg_file", "")).resolve()
-    mdg_sheets = cfg.get("mdg_sheets", ["Produto", "Peça"])
+    # Base Família Comercial:
+    # - leitura direta do CSV oficial do BI.
+    #
+    # Processamento:
+    # - consulta direta ao ASSIST, executada por carregar_dim_material().
+    #
+    # Hierarquia BU/Diretoria/Centro de Custo:
+    # - consumida da tabela dim_segmento já homologada no Banco Estoques.
+    familia_csv = Path(cfg.get("familia_csv", ""))
 
-    familia_file = Path(cfg.get("familia_file", "")).resolve()
-    familia_sheet = cfg.get("familia_sheet", "Sheet1")
-    familia_col_material = cfg.get("familia_col_material", "Cód. Material")
-    familia_col_grupo = cfg.get("familia_col_grupo", "Unidade")
-    familia_col_familia = cfg.get("familia_col_familia", "Família")
-    familia_col_subfamilia = cfg.get("familia_col_subfamilia", "SubFamília")
+    if not familia_csv.is_absolute():
+        familia_csv = (project_root / familia_csv).resolve()
+    else:
+        familia_csv = familia_csv.resolve()
 
-    # NOVA COLUNA BU
-    familia_col_area_negocio = cfg.get(
-    "familia_col_area_negocio",
-    "Área Negócio Centro Material"
-    )
-    
+    if not familia_csv.exists():
+        raise FileNotFoundError(
+            "CSV oficial da Base Família Comercial não encontrado: "
+            f"{familia_csv}"
+        )
 
     custo_file = Path(cfg.get("custo_file", "")).resolve()
     custo_sheet = cfg.get("custo_sheet", "Sheet1")
@@ -2538,46 +2643,26 @@ def run(config_path, snapshot_date=None):
 
 
     # ------------------------------------------------------------
-    # 9) 4MDG (processamento) — opcional
+    # 9) Atualização da dimensão consolidada de materiais
     # ------------------------------------------------------------
-    mdg_df = pd.DataFrame()
-    mdg_last = ""
-    if mdg_file.exists():
-        mdg_last = datetime.fromtimestamp(mdg_file.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-        mdg_df = load_mdg(mdg_file, mdg_sheets)
-        print_step(f"4MDG: {mdg_file.name} linhas={len(mdg_df)}")
-    else:
-        print_step("4MDG: arquivo não encontrado (ok, segue sem)")
+    # A dim_segmento já deve existir no Banco Estoques e é administrada
+    # por uma carga controlada separada.
+    #
+    # Esta etapa atualiza dim_material usando:
+    # - CSV oficial do BI;
+    # - ASSIST;
+    # - dim_segmento.
+    print_step("DIM_MATERIAL: iniciando carga consolidada")
 
-
-    # ------------------------------------------------------------
-    # 10) Família (grupo/família/subfamília/BU) — opcional
-    # ------------------------------------------------------------
-    familia_df = pd.DataFrame(
-        columns=["material", "grupo", "familia", "subfamilia", "area_negocio"]
+    carregar_dim_material(
+        db_path=db_path,
+        familia_csv=familia_csv,
     )
 
-    familia_last = ""
-
-    if familia_file.exists():
-        familia_last = datetime.fromtimestamp(familia_file.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-
-        familia_df = load_familia_base(
-            familia_file,
-            familia_sheet,
-            familia_col_material,
-            familia_col_grupo,
-            familia_col_familia,
-            familia_col_subfamilia,
-            familia_col_area_negocio
-        )
-
-        print_step(f"FAMÍLIA: {familia_file.name} linhas={len(familia_df)}")
-    else:
-        print_step("FAMÍLIA: arquivo não encontrado (ok, segue sem)")
+    print_step("DIM_MATERIAL: carga consolidada concluída")
 
     # ------------------------------------------------------------
-    # 11) Custo (custo unitário) — opcional
+    # 10) Custo (custo unitário) — opcional
     # ------------------------------------------------------------
     custo_df = pd.DataFrame(columns=["material", "custo_unit"])
     custo_last = ""
@@ -2613,8 +2698,9 @@ def run(config_path, snapshot_date=None):
         ensure_baseline_tables(con)
         ensure_kpi_table(con)
         ensure_kpi_diario_table(con)
-        ensure_dim_material_proc(con)
-        ensure_dim_material_grupo(con)
+        # dim_material já foi atualizada antes da abertura desta conexão.
+        # As dimensões legadas permanecem no banco durante a transição,
+        # mas não são mais alimentadas por este ETL.
         ensure_dim_material_custo(con)
         ensure_mb51_schema(con)
 
@@ -2634,16 +2720,17 @@ def run(config_path, snapshot_date=None):
         upsert_snapshot(con, sap_df, sd, sap_file.name)
 
         # ------------------------------------------------------------
-        # 15) Dimensões — grava apenas se houver dados
+        # 15) Dimensões auxiliares
         # ------------------------------------------------------------
-        if not mdg_df.empty:
-            upsert_dim_proc(con, mdg_df, mdg_file.name, "", mdg_last)
-
-        if not familia_df.empty:
-            upsert_dim_material_grupo(con, familia_df, familia_file.name, familia_last)
-
+        # dim_material foi carregada antes da abertura desta conexão.
+        # Nesta etapa permanece apenas a atualização da dimensão de custo.
         if not custo_df.empty:
-            upsert_dim_material_custo(con, custo_df, custo_file.name, custo_last)
+            upsert_dim_material_custo(
+                con,
+                custo_df,
+                custo_file.name,
+                custo_last,
+            )
 
         # ------------------------------------------------------------
         # 16) MB51 — carga e gravação (MAST)  [PASSO 1: fazer rodar]
@@ -2734,9 +2821,9 @@ def run(config_path, snapshot_date=None):
 
             f.write(
                 f"[{now_ts()}] OK snapshot={sd} dep={dep} sap={sap_file.name} "
-                f"mdg={'OK' if mdg_file.exists() else 'NA'} familia={'OK' if familia_file.exists() else 'NA'} "
-                f"custo={'OK' if custo_file.exists() else 'NA'} baseline_created={baseline_created} "
-                f"output={out_name}\n"
+                f"dim_material=OK familia_csv={familia_csv.name} assist=OK "
+                f"custo={'OK' if custo_file.exists() else 'NA'} "
+                f"baseline_created={baseline_created} output={out_name}\n"
             )
 
     # ------------------------------------------------------------

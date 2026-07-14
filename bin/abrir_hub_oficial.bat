@@ -1,21 +1,24 @@
 @echo off
-title HUB Indicadores - Oficial
+title HUB Indicadores - DEV - Abrir
 setlocal EnableExtensions DisableDelayedExpansion
 
-chcp 65001 >nul
+C:\Windows\System32\chcp.com 65001 >nul
 
 cd /d "%~dp0.." || exit /b 10
 
-set "PY=%CD%\.venv\Scripts\python.exe"
-set "APP=%CD%\code\hub\app.py"
-set "PYTHONPATH=%CD%\code"
-set "PORT=8502"
+set "ROOT=%CD%"
+set "PY=%ROOT%\.venv\Scripts\python.exe"
+set "APP=%ROOT%\code\hub\app.py"
+set "PYTHONPATH=%ROOT%\code"
+set "PYTHONUTF8=1"
+set "PORT=8503"
 
 echo ================================================================
-echo HUB       : %CD%
+echo HUB INDICADORES - DEV - ABRIR SEM ATUALIZAR
+echo ================================================================
+echo Pasta HUB : %ROOT%
 echo Python    : %PY%
 echo App       : %APP%
-echo PYTHONPATH: %PYTHONPATH%
 echo Porta     : %PORT%
 echo ================================================================
 echo.
@@ -37,18 +40,28 @@ if not exist "%APP%" (
 )
 
 echo Verificando porta %PORT%...
+set "PORT_PID="
+
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr /r /c:":%PORT% .*LISTENING"') do (
-  echo Encerrando processo que ocupa a porta %PORT%: PID %%P
-  taskkill /PID %%P /F >nul 2>&1
+  set "PORT_PID=%%P"
+)
+
+if defined PORT_PID (
+  echo Encerrando processo anterior na porta %PORT%: PID %PORT_PID%
+  taskkill /PID %PORT_PID% /F >nul 2>&1
+  timeout /t 2 /nobreak >nul
 )
 
 echo.
-echo Iniciando HUB...
+echo Iniciando HUB DEV...
+echo Acesso local: http://localhost:%PORT%
 echo.
 
-"%PY%" -m streamlit run "%APP%" --server.port %PORT%
+"%PY%" -m streamlit run "%APP%" --server.address 0.0.0.0 --server.port %PORT%
+
+set "EC=%ERRORLEVEL%"
 
 echo.
-echo HUB encerrado.
+echo HUB DEV encerrado.
 pause
-exit /b %ERRORLEVEL%
+exit /b %EC%
