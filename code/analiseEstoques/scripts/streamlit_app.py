@@ -265,9 +265,28 @@ def build_excel_export(
 # =============================================================================
 
 @_cache_data(ttl=120)
-def load_kpi_mensal_mast(db_path_str: str, mes_ref: str, meta_giro: float) -> pd.DataFrame:
+def load_kpi_mensal_mast(
+    db_path_str: str,
+    mes_ref: str,
+    meta_giro: float,
+    desconsiderar_mov_343_344: bool = False,
+) -> pd.DataFrame:
     db_path = Path(db_path_str)
     start, next_month = month_bounds(mes_ref)
+
+    filtro_movimento = ""
+
+    if desconsiderar_mov_343_344:
+        filtro_movimento = """
+        AND TRIM(COALESCE(tipo_movimento,'')) NOT IN ('343','344')
+        """
+
+    filtro_movimento = ""
+
+    if desconsiderar_mov_343_344:
+        filtro_movimento = """
+          AND TRIM(COALESCE(tipo_movimento, '')) NOT IN ('343', '344')
+        """
 
     with connect_readonly(db_path) as con:
         b = con.execute("""
@@ -275,6 +294,7 @@ def load_kpi_mensal_mast(db_path_str: str, mes_ref: str, meta_giro: float) -> pd
             FROM baseline_mensal
             WHERE mes_ref=? AND deposito='MAST';
         """, (mes_ref,)).fetchone()
+
         if not b:
             return pd.DataFrame()
 
@@ -285,73 +305,167 @@ def load_kpi_mensal_mast(db_path_str: str, mes_ref: str, meta_giro: float) -> pd
             FROM fact_estoque_snapshot
             WHERE deposito='MAST'
               AND snapshot_date >= ?
-              AND snapshot_date <  ?;
+              AND snapshot_date < ?;
         """, (start, next_month)).fetchone()[0]
+
         if not last_snap:
             return pd.DataFrame()
 
         qtd_atual, val_atual = con.execute("""
             SELECT
-              COALESCE(SUM(qtd_total),0),
-              COALESCE(SUM(val_total),0)
+              COALESCE(SUM(qtd_total), 0),
+              COALESCE(SUM(val_total), 0)
             FROM fact_estoque_snapshot
-            WHERE deposito='MAST' AND snapshot_date=?;
+            WHERE deposito='MAST'
+              AND snapshot_date=?;
         """, (last_snap,)).fetchone()
 
         qtd_atual = float(qtd_atual or 0)
         val_atual = float(val_atual or 0)
 
-        mb = con.execute("""
+        mb = con.execute(f"""
             SELECT
               COALESCE(SUM(CASE
-                    WHEN deb_cred='S' AND TRIM(COALESCE(ordem,''))=''
-                    THEN quantidade ELSE 0 END), 0) AS entradas_qtd,
+                    WHEN deb_cred='S'
+                     AND TRIM(COALESCE(ordem, ''))=''
+                    THEN quantidade
+                    ELSE 0
+              END), 0) AS entradas_qtd,
 
               COALESCE(SUM(CASE
-                    WHEN deb_cred='S' AND TRIM(COALESCE(ordem,''))=''
-                    THEN valor_estimado ELSE 0 END), 0) AS entradas_val,
+                    WHEN deb_cred='S'
+                     AND TRIM(COALESCE(ordem, ''))=''
+                    THEN valor_estimado
+                    ELSE 0
+              END), 0) AS entradas_val,
 
               COALESCE(SUM(CASE
                     WHEN deb_cred='H'
-                    THEN quantidade ELSE 0 END), 0) AS saidas_qtd,
+                    THEN quantidade
+                    ELSE 0
+              END), 0) AS saidas_qtd,
 
               COALESCE(SUM(CASE
                     WHEN deb_cred='H'
-                    THEN valor_estimado ELSE 0 END), 0) AS saidas_val
+                    THEN valor_estimado
+                    ELSE 0
+              END), 0) AS saidas_val
+
             FROM fact_mb51_mov
             WHERE deposito='MAST'
+              {filtro_movimento}
               AND data_lancamento >= ?
-              AND data_lancamento <  ?;
+              AND data_lancamento < ?;
         """, (start, next_month)).fetchone()
 
-        entradas_qtd, entradas_val, saidas_qtd, saidas_val = [float(x or 0) for x in mb]
+        entradas_qtd, entradas_val, saidas_qtd, saidas_val = [
+            float(x or 0) for x in mb
+        ]
 
-        giro_operacional_val = (saidas_val / val_base) if (val_base not in (None, 0)) else None
-        giro_operacional_qtd = (saidas_qtd / qtd_base) if (qtd_base not in (None, 0)) else None
+        giro_operacional_val = (
+            saidas_val / val_base
+            if val_base not in (None, 0)
+            else None
+        )
 
-        meta_saldo_val = (val_base / meta_giro) if (val_base not in (None, 0) and meta_giro not in (None, 0)) else None
-        meta_saldo_qtd = (qtd_base / meta_giro) if (qtd_base not in (None, 0) and meta_giro not in (None, 0)) else None
+        giro_operacional_qtd = (
+            saidas_qtd / qtd_base
+            if qtd_base not in (None, 0)
+            else None
+        )
 
-        falta_baixar_val = (val_atual - meta_saldo_val) if (meta_saldo_val is not None) else None
-        falta_baixar_qtd = (qtd_atual - meta_saldo_qtd) if (meta_saldo_qtd is not None) else None
+        meta_saldo_val = (
+            val_base / meta_giro
+            if val_base not in (None, 0)
+            and meta_giro not in (None, 0)
+            else None
+        )
 
-        ating_meta_giro_val = (giro_operacional_val / meta_giro) if (giro_operacional_val is not None and meta_giro not in (None, 0)) else None
-        ating_meta_giro_qtd = (giro_operacional_qtd / meta_giro) if (giro_operacional_qtd is not None and meta_giro not in (None, 0)) else None
+        meta_saldo_qtd = (
+            qtd_base / meta_giro
+            if qtd_base not in (None, 0)
+            and meta_giro not in (None, 0)
+            else None
+        )
 
-        giro_bi_val = (entradas_val / val_atual) if (val_atual not in (None, 0)) else None
-        giro_bi_qtd = (entradas_qtd / qtd_atual) if (qtd_atual not in (None, 0)) else None
+        falta_baixar_val = (
+            val_atual - meta_saldo_val
+            if meta_saldo_val is not None
+            else None
+        )
 
-        meta_saldo_bi_val = (entradas_val / meta_giro) if (entradas_val not in (None, 0) and meta_giro not in (None, 0)) else None
-        meta_saldo_bi_qtd = (entradas_qtd / meta_giro) if (entradas_qtd not in (None, 0) and meta_giro not in (None, 0)) else None
+        falta_baixar_qtd = (
+            qtd_atual - meta_saldo_qtd
+            if meta_saldo_qtd is not None
+            else None
+        )
 
-        saldo_a_baixar_bi_val = (val_atual - meta_saldo_bi_val) if (meta_saldo_bi_val is not None) else None
-        saldo_a_baixar_bi_qtd = (qtd_atual - meta_saldo_bi_qtd) if (meta_saldo_bi_qtd is not None) else None
+        ating_meta_giro_val = (
+            giro_operacional_val / meta_giro
+            if giro_operacional_val is not None
+            and meta_giro not in (None, 0)
+            else None
+        )
+
+        ating_meta_giro_qtd = (
+            giro_operacional_qtd / meta_giro
+            if giro_operacional_qtd is not None
+            and meta_giro not in (None, 0)
+            else None
+        )
+
+        giro_bi_val = (
+            entradas_val / val_atual
+            if val_atual not in (None, 0)
+            else None
+        )
+
+        giro_bi_qtd = (
+            entradas_qtd / qtd_atual
+            if qtd_atual not in (None, 0)
+            else None
+        )
+
+        meta_saldo_bi_val = (
+            entradas_val / meta_giro
+            if entradas_val not in (None, 0)
+            and meta_giro not in (None, 0)
+            else None
+        )
+
+        meta_saldo_bi_qtd = (
+            entradas_qtd / meta_giro
+            if entradas_qtd not in (None, 0)
+            and meta_giro not in (None, 0)
+            else None
+        )
+
+        saldo_a_baixar_bi_val = (
+            val_atual - meta_saldo_bi_val
+            if meta_saldo_bi_val is not None
+            else None
+        )
+
+        saldo_a_baixar_bi_qtd = (
+            qtd_atual - meta_saldo_bi_qtd
+            if meta_saldo_bi_qtd is not None
+            else None
+        )
 
         consumo_liq_qtd = saidas_qtd - entradas_qtd
         consumo_liq_val = saidas_val - entradas_val
 
-        eficiencia_val = (saidas_val / entradas_val) if entradas_val not in (None, 0) else None
-        eficiencia_qtd = (saidas_qtd / entradas_qtd) if entradas_qtd not in (None, 0) else None
+        eficiencia_val = (
+            saidas_val / entradas_val
+            if entradas_val not in (None, 0)
+            else None
+        )
+
+        eficiencia_qtd = (
+            saidas_qtd / entradas_qtd
+            if entradas_qtd not in (None, 0)
+            else None
+        )
 
     return pd.DataFrame([{
         "mes_ref": mes_ref,
@@ -362,22 +476,78 @@ def load_kpi_mensal_mast(db_path_str: str, mes_ref: str, meta_giro: float) -> pd
         "last_snapshot_date": str(last_snap),
         "val_atual_total": round(val_atual, 2),
 
-        "giro_bi_val": None if giro_bi_val is None else round(float(giro_bi_val), 4),
-        "giro_bi_qtd": None if giro_bi_qtd is None else round(float(giro_bi_qtd), 4),
-        "meta_saldo_bi_val": None if meta_saldo_bi_val is None else round(float(meta_saldo_bi_val), 2),
-        "meta_saldo_bi_qtd": None if meta_saldo_bi_qtd is None else round(float(meta_saldo_bi_qtd), 3),
-        "saldo_a_baixar_bi_val": None if saldo_a_baixar_bi_val is None else round(float(saldo_a_baixar_bi_val), 2),
-        "saldo_a_baixar_bi_qtd": None if saldo_a_baixar_bi_qtd is None else round(float(saldo_a_baixar_bi_qtd), 3),
+        "giro_bi_val": (
+            None
+            if giro_bi_val is None
+            else round(float(giro_bi_val), 4)
+        ),
+        "giro_bi_qtd": (
+            None
+            if giro_bi_qtd is None
+            else round(float(giro_bi_qtd), 4)
+        ),
+        "meta_saldo_bi_val": (
+            None
+            if meta_saldo_bi_val is None
+            else round(float(meta_saldo_bi_val), 2)
+        ),
+        "meta_saldo_bi_qtd": (
+            None
+            if meta_saldo_bi_qtd is None
+            else round(float(meta_saldo_bi_qtd), 3)
+        ),
+        "saldo_a_baixar_bi_val": (
+            None
+            if saldo_a_baixar_bi_val is None
+            else round(float(saldo_a_baixar_bi_val), 2)
+        ),
+        "saldo_a_baixar_bi_qtd": (
+            None
+            if saldo_a_baixar_bi_qtd is None
+            else round(float(saldo_a_baixar_bi_qtd), 3)
+        ),
 
         "qtd_atual_total": round(qtd_atual, 3),
-        "giro_operacional_val": None if giro_operacional_val is None else round(float(giro_operacional_val), 4),
-        "giro_operacional_qtd": None if giro_operacional_qtd is None else round(float(giro_operacional_qtd), 4),
-        "ating_meta_giro_val": None if ating_meta_giro_val is None else round(float(ating_meta_giro_val), 4),
-        "ating_meta_giro_qtd": None if ating_meta_giro_qtd is None else round(float(ating_meta_giro_qtd), 4),
-        "meta_saldo_val": None if meta_saldo_val is None else round(float(meta_saldo_val), 2),
-        "meta_saldo_qtd": None if meta_saldo_qtd is None else round(float(meta_saldo_qtd), 3),
-        "falta_baixar_val": None if falta_baixar_val is None else round(float(falta_baixar_val), 2),
-        "falta_baixar_qtd": None if falta_baixar_qtd is None else round(float(falta_baixar_qtd), 3),
+        "giro_operacional_val": (
+            None
+            if giro_operacional_val is None
+            else round(float(giro_operacional_val), 4)
+        ),
+        "giro_operacional_qtd": (
+            None
+            if giro_operacional_qtd is None
+            else round(float(giro_operacional_qtd), 4)
+        ),
+        "ating_meta_giro_val": (
+            None
+            if ating_meta_giro_val is None
+            else round(float(ating_meta_giro_val), 4)
+        ),
+        "ating_meta_giro_qtd": (
+            None
+            if ating_meta_giro_qtd is None
+            else round(float(ating_meta_giro_qtd), 4)
+        ),
+        "meta_saldo_val": (
+            None
+            if meta_saldo_val is None
+            else round(float(meta_saldo_val), 2)
+        ),
+        "meta_saldo_qtd": (
+            None
+            if meta_saldo_qtd is None
+            else round(float(meta_saldo_qtd), 3)
+        ),
+        "falta_baixar_val": (
+            None
+            if falta_baixar_val is None
+            else round(float(falta_baixar_val), 2)
+        ),
+        "falta_baixar_qtd": (
+            None
+            if falta_baixar_qtd is None
+            else round(float(falta_baixar_qtd), 3)
+        ),
 
         "entradas_reais_qtd_mes": round(entradas_qtd, 3),
         "entradas_reais_val_mes": round(entradas_val, 2),
@@ -385,72 +555,128 @@ def load_kpi_mensal_mast(db_path_str: str, mes_ref: str, meta_giro: float) -> pd
         "saidas_reais_val_mes": round(saidas_val, 2),
         "consumo_liq_qtd_mes": round(consumo_liq_qtd, 3),
         "consumo_liq_val_mes": round(consumo_liq_val, 2),
-        "eficiencia_val_ratio": None if eficiencia_val is None else round(float(eficiencia_val), 4),
-        "eficiencia_qtd_ratio": None if eficiencia_qtd is None else round(float(eficiencia_qtd), 4),
+        "eficiencia_val_ratio": (
+            None
+            if eficiencia_val is None
+            else round(float(eficiencia_val), 4)
+        ),
+        "eficiencia_qtd_ratio": (
+            None
+            if eficiencia_qtd is None
+            else round(float(eficiencia_qtd), 4)
+        ),
     }])
 
 @_cache_data(ttl=120)
-def load_eficiencia_bu_mast(db_path_str: str, mes_ref: str) -> pd.DataFrame:
+def _load_eficiencia_hierarquia_mast(
+    db_path_str: str,
+    mes_ref: str,
+    group_fields: list[str],
+) -> pd.DataFrame:
     """
-    Eficiência financeira por BU baseada em snapshots SAP.
+    Calcula eficiência financeira por uma hierarquia comercial.
 
-    Regra:
-    - Baseline inicial: snapshot do baseline_mensal
-    - Entradas SAP: aumentos de valor entre snapshots
-    - Consumo SAP: reduções de valor entre snapshots
-    - Saldo atual SAP: último snapshot do mês
-
-    Fechamento:
-    baseline + entradas_sap - consumo_sap = saldo_atual_sap
+    Exemplos de agrupamento:
+    - ["bu"]
+    - ["bu", "diretoria"]
+    - ["bu", "diretoria", "segmento"]
     """
+
+    campos_validos = {
+        "bu",
+        "diretoria",
+        "segmento",
+        "centro_lucro",
+        "centro_custo",
+    }
+
+    if not group_fields:
+        raise ValueError("Informe pelo menos um campo de agrupamento.")
+
+    campos_invalidos = set(group_fields) - campos_validos
+
+    if campos_invalidos:
+        raise ValueError(
+            f"Campos de agrupamento inválidos: {sorted(campos_invalidos)}"
+        )
 
     db_path = Path(db_path_str)
     start, next_month = month_bounds(mes_ref)
 
+    select_hierarquia = ",\n                ".join(
+        [
+            (
+                f"COALESCE(NULLIF(TRIM(dm.{campo}), ''), "
+                f"'SEM_{campo.upper()}') AS {campo}"
+            )
+            for campo in group_fields
+        ]
+    )
+
     with connect_readonly(db_path) as con:
-        row_base = con.execute("""
+        row_base = con.execute(
+            """
             SELECT baseline_date
             FROM baseline_mensal
             WHERE mes_ref = ?
               AND deposito = 'MAST'
-        """, (mes_ref,)).fetchone()
+            """,
+            (mes_ref,),
+        ).fetchone()
 
         if not row_base:
             return pd.DataFrame()
 
         baseline_date = row_base[0]
 
-        last_snap = con.execute("""
+        last_snap = con.execute(
+            """
             SELECT MAX(snapshot_date)
             FROM fact_estoque_snapshot
             WHERE deposito = 'MAST'
               AND snapshot_date >= ?
               AND snapshot_date < ?
-        """, (start, next_month)).fetchone()[0]
+            """,
+            (start, next_month),
+        ).fetchone()[0]
 
         if not last_snap:
             return pd.DataFrame()
 
-        df_snap = pd.read_sql_query("""
+        sql_snap = f"""
             SELECT
                 fes.snapshot_date,
-                COALESCE(dmg.area_negocio, 'SEM_BU') AS area_negocio,
+                {select_hierarquia},
                 fes.material,
                 COALESCE(fes.val_total, 0) AS val_total
             FROM fact_estoque_snapshot fes
-            LEFT JOIN dim_material_grupo dmg
-                ON fes.material = dmg.material
+            LEFT JOIN dim_material dm
+                ON fes.material = dm.material
             WHERE fes.deposito = 'MAST'
               AND fes.snapshot_date >= ?
               AND fes.snapshot_date <= ?
-        """, con, params=[baseline_date, last_snap])
+        """
+
+        df_snap = pd.read_sql_query(
+            sql_snap,
+            con,
+            params=[baseline_date, last_snap],
+        )
 
     if df_snap.empty:
         return pd.DataFrame()
 
-    df_snap["val_total"] = pd.to_numeric(df_snap["val_total"], errors="coerce").fillna(0.0)
+    df_snap["val_total"] = pd.to_numeric(
+        df_snap["val_total"],
+        errors="coerce",
+    ).fillna(0.0)
 
-    datas = sorted(df_snap["snapshot_date"].dropna().unique().tolist())
+    datas = sorted(
+        df_snap["snapshot_date"]
+        .dropna()
+        .unique()
+        .tolist()
+    )
 
     if baseline_date not in datas:
         datas.insert(0, baseline_date)
@@ -458,9 +684,11 @@ def load_eficiencia_bu_mast(db_path_str: str, mes_ref: str) -> pd.DataFrame:
     if last_snap not in datas:
         datas.append(last_snap)
 
+    index_fields = [*group_fields, "material"]
+
     pivot = (
         df_snap.pivot_table(
-            index=["area_negocio", "material"],
+            index=index_fields,
             columns="snapshot_date",
             values="val_total",
             aggfunc="sum",
@@ -470,25 +698,25 @@ def load_eficiencia_bu_mast(db_path_str: str, mes_ref: str) -> pd.DataFrame:
         .sort_index(axis=1)
     )
 
-    # Baseline e saldo atual oficiais SAP
     baseline_por_item = pivot[baseline_date]
     saldo_atual_por_item = pivot[last_snap]
 
-    # Variações entre snapshots
     deltas = pivot.diff(axis=1).iloc[:, 1:]
 
     entradas_por_item = deltas.clip(lower=0).sum(axis=1)
     consumo_por_item = (-deltas.clip(upper=0)).sum(axis=1)
 
-    df_calc = pd.DataFrame({
-        "baseline_val": baseline_por_item,
-        "entradas_val": entradas_por_item,
-        "consumo_real_sap_val": consumo_por_item,
-        "saldo_atual_sap_val": saldo_atual_por_item,
-    }).reset_index()
+    df_calc = pd.DataFrame(
+        {
+            "baseline_val": baseline_por_item,
+            "entradas_val": entradas_por_item,
+            "consumo_real_sap_val": consumo_por_item,
+            "saldo_atual_sap_val": saldo_atual_por_item,
+        }
+    ).reset_index()
 
     df = (
-        df_calc.groupby("area_negocio", as_index=False)
+        df_calc.groupby(group_fields, as_index=False)
         .agg(
             baseline_val=("baseline_val", "sum"),
             entradas_val=("entradas_val", "sum"),
@@ -497,46 +725,84 @@ def load_eficiencia_bu_mast(db_path_str: str, mes_ref: str) -> pd.DataFrame:
         )
     )
 
-    df["base_disponivel_val"] = df["baseline_val"] + df["entradas_val"]
+    df["base_disponivel_val"] = (
+        df["baseline_val"] + df["entradas_val"]
+    )
 
     df["eficiencia_disponibilidade_pct"] = np.where(
         df["base_disponivel_val"] > 0,
         df["consumo_real_sap_val"] / df["base_disponivel_val"],
-        0
+        0,
     )
 
-    # Compatibilidade com gráficos já existentes:
-    # daqui para frente, saidas_val representa consumo SAP financeiro real.
     df["saidas_val"] = df["consumo_real_sap_val"]
     df["eficiencia_pct"] = df["eficiencia_disponibilidade_pct"]
     df["baseline_restante"] = df["saldo_atual_sap_val"]
 
     total_consumo = float(df["consumo_real_sap_val"].sum())
+
     df["participacao_saida_pct"] = np.where(
         total_consumo > 0,
         df["consumo_real_sap_val"] / total_consumo,
-        0
+        0,
     )
 
     total_baseline = float(df["baseline_val"].sum())
+
     df["participacao_baseline_pct"] = np.where(
         total_baseline > 0,
         df["baseline_val"] / total_baseline,
-        0
+        0,
     )
 
     df["classe_relevancia"] = np.where(
         df["participacao_baseline_pct"] >= 0.03,
         "Relevante",
-        "Baixo impacto"
+        "Baixo impacto",
     )
 
     df["baseline_date"] = baseline_date
     df["last_snapshot_date"] = last_snap
 
-    df = df.sort_values("consumo_real_sap_val", ascending=False).reset_index(drop=True)
+    df = df.sort_values(
+        "consumo_real_sap_val",
+        ascending=False,
+    ).reset_index(drop=True)
 
     return df
+
+
+@_cache_data(ttl=120)
+def load_eficiencia_bu_mast(
+    db_path_str: str,
+    mes_ref: str,
+) -> pd.DataFrame:
+    df = _load_eficiencia_hierarquia_mast(
+        db_path_str=db_path_str,
+        mes_ref=mes_ref,
+        group_fields=["bu"],
+    )
+
+    if not df.empty:
+        df["area_negocio"] = df["bu"]
+
+    return df
+
+
+@_cache_data(ttl=120)
+def load_eficiencia_segmento_mast(
+    db_path_str: str,
+    mes_ref: str,
+) -> pd.DataFrame:
+    return _load_eficiencia_hierarquia_mast(
+        db_path_str=db_path_str,
+        mes_ref=mes_ref,
+        group_fields=[
+            "bu",
+            "diretoria",
+            "segmento",
+        ],
+    )
 
 @_cache_data(ttl=120)
 def load_snapshot_saldo_mes(db_path_str: str, mes_ref: str) -> pd.DataFrame:
@@ -556,48 +822,103 @@ def load_snapshot_saldo_mes(db_path_str: str, mes_ref: str) -> pd.DataFrame:
             ORDER BY snapshot_date;
         """, con, params=[start, next_month])
 
-
 @_cache_data(ttl=120)
-def load_mb51_diario_real_mes(db_path_str: str, mes_ref: str) -> pd.DataFrame:
+def load_mb51_diario_real_mes(
+    db_path_str: str,
+    mes_ref: str,
+    desconsiderar_mov_343_344: bool = False,
+) -> pd.DataFrame:
     """
     MB51 REAL diário (MAST) no mês.
-    Entradas reais: S e ordem vazia
-    Saídas reais:  H (todas, independente de ordem)
+    Entradas reais: S e ordem vazia.
+    Saídas reais: H, todas, independentemente de ordem.
     """
     db_path = Path(db_path_str)
     start, next_month = month_bounds(mes_ref)
 
+    filtro_movimento = ""
+
+    if desconsiderar_mov_343_344:
+        filtro_movimento = """
+          AND TRIM(COALESCE(tipo_movimento,'')) NOT IN ('343','344')
+        """
+
     with connect_readonly(db_path) as con:
-        df = pd.read_sql_query("""
+        df = pd.read_sql_query(
+            f"""
             SELECT
               data_lancamento AS dia,
-              SUM(CASE WHEN deb_cred='S' AND TRIM(COALESCE(ordem,''))=''  THEN quantidade      ELSE 0 END) AS entradas_qtd,
-              SUM(CASE WHEN deb_cred='S' AND TRIM(COALESCE(ordem,''))=''  THEN valor_estimado  ELSE 0 END) AS entradas_val,
-              SUM(CASE WHEN deb_cred='H' THEN quantidade      ELSE 0 END) AS saidas_qtd,
-              SUM(CASE WHEN deb_cred='H' THEN valor_estimado  ELSE 0 END) AS saidas_val
+              SUM(
+                  CASE
+                      WHEN deb_cred='S'
+                       AND TRIM(COALESCE(ordem,''))=''
+                      THEN quantidade
+                      ELSE 0
+                  END
+              ) AS entradas_qtd,
+              SUM(
+                  CASE
+                      WHEN deb_cred='S'
+                       AND TRIM(COALESCE(ordem,''))=''
+                      THEN valor_estimado
+                      ELSE 0
+                  END
+              ) AS entradas_val,
+              SUM(
+                  CASE
+                      WHEN deb_cred='H'
+                      THEN quantidade
+                      ELSE 0
+                  END
+              ) AS saidas_qtd,
+              SUM(
+                  CASE
+                      WHEN deb_cred='H'
+                      THEN valor_estimado
+                      ELSE 0
+                  END
+              ) AS saidas_val
             FROM fact_mb51_mov
             WHERE deposito='MAST'
               AND data_lancamento >= ?
-              AND data_lancamento <  ?
+              AND data_lancamento < ?
+              {filtro_movimento}
             GROUP BY data_lancamento
             ORDER BY data_lancamento;
-        """, con, params=[start, next_month])
+            """,
+            con,
+            params=[start, next_month],
+        )
 
     if df.empty:
         return df
 
     df["consumo_liq_qtd"] = df["saidas_qtd"] - df["entradas_qtd"]
     df["consumo_liq_val"] = df["saidas_val"] - df["entradas_val"]
+
     return df
 
 
 @_cache_data(ttl=120)
-def load_mb51_resumo_material_mes(db_path_str: str, mes_ref: str, material: str) -> dict:
+def load_mb51_resumo_material_mes(
+    db_path_str: str,
+    mes_ref: str,
+    material: str,
+    desconsiderar_mov_343_344: bool = False,
+) -> dict:
     db_path = Path(db_path_str)
     start, next_month = month_bounds(mes_ref)
 
+    filtro_movimento = ""
+
+    if desconsiderar_mov_343_344:
+        filtro_movimento = """
+          AND TRIM(COALESCE(tipo_movimento,'')) NOT IN ('343','344')
+        """
+
     with connect_readonly(db_path) as con:
-        row = con.execute("""
+        row = con.execute(
+            f"""
             SELECT
               COALESCE(SUM(CASE
                     WHEN deb_cred='S' AND TRIM(COALESCE(ordem,''))=''
@@ -614,14 +935,21 @@ def load_mb51_resumo_material_mes(db_path_str: str, mes_ref: str, material: str)
               COALESCE(SUM(CASE
                     WHEN deb_cred='H'
                     THEN valor_estimado ELSE 0 END), 0) AS saidas_val
+
             FROM fact_mb51_mov
+
             WHERE deposito='MAST'
               AND material = ?
               AND data_lancamento >= ?
-              AND data_lancamento <  ?;
-        """, (str(material), start, next_month)).fetchone()
+              AND data_lancamento < ?
+              {filtro_movimento};
+            """,
+            (str(material), start, next_month),
+        ).fetchone()
 
-    entradas_qtd, entradas_val, saidas_qtd, saidas_val = [float(x or 0) for x in row]
+    entradas_qtd, entradas_val, saidas_qtd, saidas_val = [
+        float(x or 0) for x in row
+    ]
 
     return {
         "entradas_qtd": entradas_qtd,
@@ -690,37 +1018,71 @@ def load_snapshot_material_mes(db_path_str: str, mes_ref: str, material: str) ->
 
 
 @_cache_data(ttl=120)
-def load_mb51_diario_mes(db_path_str: str, mes_ref: str) -> pd.DataFrame:
+def desconsiderar_mov_343_344(
+    db_path_str: str,
+    mes_ref: str,
+    desconsiderar_mov_343_344: bool = False,
+) -> pd.DataFrame:
     db_path = Path(db_path_str)
     start, next_month = month_bounds(mes_ref)
+
+    filtro_movimento = ""
+
+    if desconsiderar_mov_343_344:
+        filtro_movimento = """
+          AND TRIM(COALESCE(tipo_movimento,'')) NOT IN ('343','344')
+        """
+
     with connect_readonly(db_path) as con:
-        df = pd.read_sql_query("""
+        df = pd.read_sql_query(
+            f"""
             SELECT
               data_lancamento AS dia,
+
               COALESCE(SUM(CASE
-                    WHEN deb_cred='S' AND TRIM(COALESCE(ordem,''))=''
-                    THEN quantidade ELSE 0 END), 0) AS entradas_qtd,
+                    WHEN deb_cred='S'
+                     AND TRIM(COALESCE(ordem,''))=''
+                    THEN quantidade
+                    ELSE 0
+              END), 0) AS entradas_qtd,
+
               COALESCE(SUM(CASE
-                    WHEN deb_cred='S' AND TRIM(COALESCE(ordem,''))=''
-                    THEN valor_estimado ELSE 0 END), 0) AS entradas_val,
+                    WHEN deb_cred='S'
+                     AND TRIM(COALESCE(ordem,''))=''
+                    THEN valor_estimado
+                    ELSE 0
+              END), 0) AS entradas_val,
+
               COALESCE(SUM(CASE
                     WHEN deb_cred='H'
-                    THEN quantidade ELSE 0 END), 0) AS saidas_qtd,
+                    THEN quantidade
+                    ELSE 0
+              END), 0) AS saidas_qtd,
+
               COALESCE(SUM(CASE
                     WHEN deb_cred='H'
-                    THEN valor_estimado ELSE 0 END), 0) AS saidas_val
+                    THEN valor_estimado
+                    ELSE 0
+              END), 0) AS saidas_val
+
             FROM fact_mb51_mov
+
             WHERE deposito='MAST'
               AND data_lancamento >= ?
-              AND data_lancamento <  ?
+              AND data_lancamento < ?
+              {filtro_movimento}
+
             GROUP BY data_lancamento
             ORDER BY data_lancamento;
-        """, con, params=[start, next_month])
+            """,
+            con,
+            params=[start, next_month],
+        )
 
     df["consumo_liq_qtd"] = df["saidas_qtd"] - df["entradas_qtd"]
     df["consumo_liq_val"] = df["saidas_val"] - df["entradas_val"]
-    return df
 
+    return df
 
 @_cache_data(ttl=120)
 def load_ataque_quadrantes_mes(db_path_str: str, mes_ref: str, p: float = 0.70) -> tuple[pd.DataFrame, pd.DataFrame, float, float]:
@@ -871,23 +1233,71 @@ def run():
     # Sidebar
     # ----------------------------
     st.sidebar.header("Parâmetros")
-    db_path = st.sidebar.text_input("DB (SQLite)", value=str(DEFAULT_DB))
-    meta_giro = st.sidebar.number_input("Meta de giro (mês)", min_value=0.1, max_value=10.0, value=1.2, step=0.1)
+
+    db_path = st.sidebar.text_input(
+        "DB (SQLite)",
+        value=str(DEFAULT_DB),
+    )
+
+    meta_giro = st.sidebar.number_input(
+        "Meta de giro (mês)",
+        min_value=0.1,
+        max_value=10.0,
+        value=1.2,
+        step=0.1,
+    )
+
+    # ------------------------------------------------------------------
+    # Filtro opcional para análises operacionais
+    #
+    # Quando marcado, os movimentos SAP 343 e 344 (bloqueio/desbloqueio)
+    # serão desconsiderados nas consultas MB51.
+    #
+    # Nesta primeira etapa o checkbox apenas cria a variável.
+    # Nenhuma consulta utiliza este valor ainda.
+    # ------------------------------------------------------------------
+    desconsiderar_mov_343_344 = st.sidebar.checkbox(
+        "Desconsiderar movimentos 343 e 344",
+        value=True,
+        help=(
+            "Remove das análises MB51 os movimentos de bloqueio/desbloqueio "
+            "(343 e 344). O comportamento padrão permanece inalterado."
+        ),
+    )
 
     meses = list_meses_disponiveis(db_path)
+
     if not meses:
-        st.error("Não encontrei meses em baseline_mensal para MAST. Rode o ETL primeiro.")
+        st.error(
+            "Não encontrei meses em baseline_mensal para MAST. "
+            "Rode o ETL primeiro."
+        )
         st.stop()
 
-    mes_ref = st.sidebar.selectbox("Mês de referência", options=meses, index=len(meses) - 1)
+    mes_ref = st.sidebar.selectbox(
+        "Mês de referência",
+        options=meses,
+        index=len(meses) - 1,
+    )
 
     # ----------------------------
     # Tabs
     # ----------------------------
-    tab1, tab2, tab3 = st.tabs(["Mensal (KPI)", "Diário (séries)", "Ataque (quadrantes)"])
+    tab1, tab2, tab3 = st.tabs(
+        [
+            "Mensal (KPI)",
+            "Diário (séries)",
+            "Ataque (quadrantes)",
+        ]
+    )
 
     with tab1:
-        kpi = load_kpi_mensal_mast(db_path, mes_ref, float(meta_giro))
+        kpi = load_kpi_mensal_mast(
+        db_path,
+        mes_ref,
+        float(meta_giro),
+        desconsiderar_mov_343_344,
+    )
         if kpi.empty:
             st.error(f"Sem dados suficientes para montar o KPI mensal de {mes_ref}.")
             st.stop()
@@ -963,7 +1373,7 @@ def run():
             df_bu_view["Consumo SAP (R$)"] = df_bu_view["consumo_real_sap_val"].map(lambda x: _fmt_ptbr_num(x, 2))
             df_bu_view["Saldo atual (SAP) (R$)"] = df_bu_view["saldo_atual_sap_val"].map(lambda x: _fmt_ptbr_num(x, 2))
             df_bu_view["Eficiência"] = df_bu_view["eficiencia_pct"].map(lambda x: _fmt_pct(x, 1))
-            df_bu_view["% part. saídas"] = df_bu_view["participacao_saida_pct"].map(lambda x: _fmt_pct(x, 1))
+            df_bu_view["% part. consumo"] = df_bu_view["participacao_saida_pct"].map(lambda x: _fmt_pct(x, 1))
             df_bu_view["% part. baseline"] = df_bu_view["participacao_baseline_pct"].map(lambda x: _fmt_pct(x, 1))
             
             df_bu_view = df_bu_view.rename(columns={
@@ -980,7 +1390,7 @@ def run():
                 "Consumo SAP (R$)",
                 "Saldo atual (SAP) (R$)",
                 "Eficiência",
-                "% part. saídas",
+                "% part. consumo",
                 "% part. baseline",
             ]
                 ],
@@ -988,7 +1398,221 @@ def run():
                 hide_index=True,
             )
 
-            st.markdown("### Participação das BUs nas saídas do mês")
+            
+            st.markdown("### Detalhamento por Diretoria e Segmento")
+
+            df_segmento = load_eficiencia_segmento_mast(
+                db_path,
+                mes_ref,
+            )
+
+            if df_segmento.empty:
+                st.info(
+                    "Sem dados suficientes para detalhar a eficiência "
+                    "por Diretoria e Segmento."
+                )
+            else:
+                df_segmento_filtrado = df_segmento.copy()
+
+                # ---------------------------------------------------------
+                # Filtro de BU
+                # ---------------------------------------------------------
+                lista_bu = sorted(
+                    df_segmento_filtrado["bu"]
+                    .dropna()
+                    .astype(str)
+                    .unique()
+                    .tolist()
+                )
+
+                opcoes_bu = ["Todas"] + lista_bu
+
+                filtro_bu = st.selectbox(
+                    "BU",
+                    options=opcoes_bu,
+                    index=0,
+                    key=f"filtro_eficiencia_bu_segmento_{mes_ref}",
+                )
+
+                if filtro_bu != "Todas":
+                    df_segmento_filtrado = df_segmento_filtrado[
+                        df_segmento_filtrado["bu"] == filtro_bu
+                    ].copy()
+
+                # ---------------------------------------------------------
+                # Filtro de Diretoria
+                # As opções dependem da BU selecionada.
+                # ---------------------------------------------------------
+                lista_diretoria = sorted(
+                    df_segmento_filtrado["diretoria"]
+                    .dropna()
+                    .astype(str)
+                    .unique()
+                    .tolist()
+                )
+
+                opcoes_diretoria = ["Todas"] + lista_diretoria
+
+                filtro_diretoria = st.selectbox(
+                    "Diretoria",
+                    options=opcoes_diretoria,
+                    index=0,
+                    key=f"filtro_eficiencia_diretoria_segmento_{mes_ref}",
+                )
+
+                if filtro_diretoria != "Todas":
+                    df_segmento_filtrado = df_segmento_filtrado[
+                        df_segmento_filtrado["diretoria"]
+                        == filtro_diretoria
+                    ].copy()
+
+                if df_segmento_filtrado.empty:
+                    st.info(
+                        "Nenhum segmento encontrado para os filtros selecionados."
+                    )
+                else:
+                    # -----------------------------------------------------
+                    # Recalcula as participações dentro do recorte filtrado.
+                    # Isso evita mostrar percentuais referentes ao total geral
+                    # quando o usuário seleciona uma BU ou Diretoria.
+                    # -----------------------------------------------------
+                    total_consumo_filtrado = float(
+                        df_segmento_filtrado[
+                            "consumo_real_sap_val"
+                        ].sum()
+                    )
+
+                    df_segmento_filtrado[
+                        "participacao_consumo_filtrado_pct"
+                    ] = np.where(
+                        total_consumo_filtrado > 0,
+                        (
+                            df_segmento_filtrado[
+                                "consumo_real_sap_val"
+                            ]
+                            / total_consumo_filtrado
+                        ),
+                        0,
+                    )
+
+                    total_baseline_filtrado = float(
+                        df_segmento_filtrado["baseline_val"].sum()
+                    )
+
+                    df_segmento_filtrado[
+                        "participacao_baseline_filtrado_pct"
+                    ] = np.where(
+                        total_baseline_filtrado > 0,
+                        (
+                            df_segmento_filtrado["baseline_val"]
+                            / total_baseline_filtrado
+                        ),
+                        0,
+                    )
+
+                    # -----------------------------------------------------
+                    # Montagem da tabela visual
+                    # -----------------------------------------------------
+                    df_segmento_view = df_segmento_filtrado.copy()
+
+                    df_segmento_view["Baseline inicial (R$)"] = (
+                        df_segmento_view["baseline_val"].map(
+                            lambda x: _fmt_ptbr_num(x, 2)
+                        )
+                    )
+
+                    df_segmento_view["Entradas SAP (R$)"] = (
+                        df_segmento_view["entradas_val"].map(
+                            lambda x: _fmt_ptbr_num(x, 2)
+                        )
+                    )
+
+                    df_segmento_view["Base disponível (R$)"] = (
+                        df_segmento_view["base_disponivel_val"].map(
+                            lambda x: _fmt_ptbr_num(x, 2)
+                        )
+                    )
+
+                    df_segmento_view["Consumo SAP (R$)"] = (
+                        df_segmento_view[
+                            "consumo_real_sap_val"
+                        ].map(
+                            lambda x: _fmt_ptbr_num(x, 2)
+                        )
+                    )
+
+                    df_segmento_view["Saldo atual SAP (R$)"] = (
+                        df_segmento_view[
+                            "saldo_atual_sap_val"
+                        ].map(
+                            lambda x: _fmt_ptbr_num(x, 2)
+                        )
+                    )
+
+                    df_segmento_view["Eficiência"] = (
+                        df_segmento_view["eficiencia_pct"].map(
+                            lambda x: _fmt_pct(x, 1)
+                        )
+                    )
+
+                    df_segmento_view["% part. consumo"] = (
+                        df_segmento_view[
+                            "participacao_consumo_filtrado_pct"
+                        ].map(
+                            lambda x: _fmt_pct(x, 1)
+                        )
+                    )
+
+                    df_segmento_view["% part. baseline"] = (
+                        df_segmento_view[
+                            "participacao_baseline_filtrado_pct"
+                        ].map(
+                            lambda x: _fmt_pct(x, 1)
+                        )
+                    )
+
+                    df_segmento_view = df_segmento_view.rename(
+                        columns={
+                            "bu": "BU",
+                            "diretoria": "Diretoria",
+                            "segmento": "Segmento",
+                        }
+                    )
+
+                    df_segmento_view = df_segmento_view.sort_values(
+                        [
+                            "BU",
+                            "Diretoria",
+                            "consumo_real_sap_val",
+                        ],
+                        ascending=[
+                            True,
+                            True,
+                            False,
+                        ],
+                    )
+
+                    st.dataframe(
+                        df_segmento_view[
+                            [
+                                "BU",
+                                "Diretoria",
+                                "Segmento",
+                                "Baseline inicial (R$)",
+                                "Entradas SAP (R$)",
+                                "Base disponível (R$)",
+                                "Consumo SAP (R$)",
+                                "Saldo atual SAP (R$)",
+                                "Eficiência",
+                                "% part. consumo",
+                                "% part. baseline",
+                            ]
+                        ],
+                        width="stretch",
+                        hide_index=True,
+                    )                        
+
+            st.markdown("### Participação das BUs nas consumos do mês")
 
             df_plot_saida = df_bu.copy()
 
@@ -1006,7 +1630,7 @@ def run():
                 color="classe_relevancia",
                 custom_data=["saidas_val", "baseline_val", "participacao_baseline_pct"],
                 labels={
-                    "participacao_saida_pct": "% das saídas",
+                    "participacao_saida_pct": "% do consumo",
                     "area_negocio": "BU"
                 },
                 color_discrete_map={
@@ -1021,8 +1645,8 @@ def run():
                 textposition="outside",
                 hovertemplate=(
                     "<b>%{y}</b><br>"
-                    "Participação nas saídas: %{x:.1%}<br>"
-                    "Saídas: R$ %{customdata[0]:,.2f}<br>"
+                    "Participação no consumo: %{x:.1%}<br>"
+                    "Consumo SAP: R$ %{customdata[0]:,.2f}<br>"
                     "Baseline: R$ %{customdata[1]:,.2f}<br>"
                     "% do baseline: %{customdata[2]:.1%}"
                     "<extra></extra>"
@@ -1083,8 +1707,8 @@ def run():
                     "<b>%{y}</b><br>"
                     "Eficiência: %{x:.1%}<br>"
                     "Baseline: R$ %{customdata[0]:,.2f}<br>"
-                    "Saídas: R$ %{customdata[1]:,.2f}<br>"
-                    "Restante: R$ %{customdata[2]:,.2f}<br>"
+                    "Consumo SAP: R$ %{customdata[1]:,.2f}<br>"
+                     "Saldo atual SAP: R$ %{customdata[2]:,.2f}<br>"
                     "% do baseline: %{customdata[3]:.1%}"
                     "<extra></extra>"
                 )
@@ -1306,7 +1930,11 @@ def run():
     with tab2:
         st.subheader(f"Séries diárias — {mes_ref}")
 
-        df_mb_d = load_mb51_diario_real_mes(db_path, mes_ref)
+        df_mb_d = load_mb51_diario_real_mes(
+            db_path,
+            mes_ref,
+            desconsiderar_mov_343_344,
+)
         df_snap = load_snapshot_saldo_mes(db_path, mes_ref)
 
         c1, c2 = st.columns(2)
