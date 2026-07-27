@@ -2039,10 +2039,11 @@ def build_output(con: sqlite3.Connection, deposito: str, d: date, out_dir: Path,
 
     base_full["material"] = base_full["material"].astype("string").apply(norm_material_text)
 
-    # Dimensão consolidada de materiais.
-    # Fonte comercial: CSV oficial do BI.
-    # Hierarquia: dim_segmento.
-    # Processamento: ASSIST.
+    # Hierarquia comercial:
+    # - BU, Diretoria e Segmento vêm do CSV da Base Família Comercial.
+    # - Centro de Custo vem de map_centro_lucro_centro_custo,
+    #   pela combinação Centro SAP + Centro de Lucro.
+    # - Mapeamentos pendentes permanecem sem Centro de Custo.
     dim_material = pd.read_sql_query(
         """
         SELECT
@@ -2553,17 +2554,7 @@ def run(config_path, snapshot_date=None):
 
     print_step(f"MB51: procurando pasta em: {mb51_in}")
 
-    # ------------------------------------------------------------
-    # 5) Fontes auxiliares da nova arquitetura
-    # ------------------------------------------------------------
-    # Base Família Comercial:
-    # - leitura direta do CSV oficial do BI.
-    #
-    # Processamento:
-    # - consulta direta ao ASSIST, executada por carregar_dim_material().
-    #
-    # Hierarquia BU/Diretoria/Centro de Custo:
-    # - consumida da tabela dim_segmento já homologada no Banco Estoques.
+
     familia_csv = Path(cfg.get("familia_csv", ""))
 
     if not familia_csv.is_absolute():
@@ -2642,16 +2633,8 @@ def run(config_path, snapshot_date=None):
         print_step("MB51: pasta MB51_IN não encontrada (ok, segue sem)")
 
 
-    # ------------------------------------------------------------
-    # 9) Atualização da dimensão consolidada de materiais
-    # ------------------------------------------------------------
-    # A dim_segmento já deve existir no Banco Estoques e é administrada
-    # por uma carga controlada separada.
-    #
-    # Esta etapa atualiza dim_material usando:
-    # - CSV oficial do BI;
-    # - ASSIST;
-    # - dim_segmento.
+
+
     print_step("DIM_MATERIAL: iniciando carga consolidada")
 
     carregar_dim_material(

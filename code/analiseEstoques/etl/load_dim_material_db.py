@@ -233,7 +233,8 @@ def carregar_dim_material(
     print(f"Registros gravados............. {len(dim):,}".replace(",", "."))
     print(f"Fonte comercial................ {csv_bi.name}")
     print("Fonte processamento............ ASSIST_INTELBRAS")
-    print("Fonte hierarquia............... dim_segmento")
+    print("Fonte hierarquia comercial..... CSV_BI_BASE_FAMILIA_COMERCIAL")
+    print("Fonte centro de custo........... map_centro_lucro_centro_custo")
     print(f"Data/hora da carga............. {load_ts}")
     print("=" * 72)
 

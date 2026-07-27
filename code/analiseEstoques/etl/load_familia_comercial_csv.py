@@ -97,9 +97,11 @@ def load_familia_comercial_csv(
             f"Quantidade: {len(duplicados)}. Amostra: {duplicados[:20]}"
         )
 
+    # BU e Segmento são obrigatórios para a classificação comercial.
+    # Diretoria é um nível opcional da hierarquia, pois algumas BUs
+    # não possuem esse nível organizacional.
     pendente = (
         out["bu"].isna()
-        | out["diretoria"].isna()
         | out["segmento"].isna()
     )
 
